@@ -1,4 +1,11 @@
 import { ScreenId } from '../types';
+export {
+  registerInterfaceComponent,
+  unregisterInterfaceComponent,
+  getInterfaceComponent,
+  hasInterfaceComponent,
+  getAllRegisteredComponentKeys,
+} from './interfaceComponentRegistry';
 
 export type InterfaceCategory =
   | 'Core'
@@ -11,9 +18,9 @@ export type InterfaceCategory =
 export interface InterfaceMetadata {
   id: string;
   name: string;
-  route: ScreenId;
+  route: ScreenId | string;
   category: InterfaceCategory;
-  parent?: ScreenId;
+  parent?: ScreenId | string;
   description: string;
   isAvailable: boolean;
   isScrollable: boolean;
@@ -258,6 +265,41 @@ export const AXON_INTERFACES: InterfaceMetadata[] = [
     isScrollable: true,
     preferredDimensions: { width: 430, height: 932 },
     keywords: ['capture', 'interface capture', 'screenshot', 'export ui', 'pdf export', 'ui capture'],
+  },
+
+  // 9. System Overlays & Modals
+  {
+    id: 'hamburger-drawer',
+    name: 'Navigation Menu',
+    route: 'hamburger-drawer',
+    category: 'System',
+    description: 'Slide-out navigation drawer with interface links and system stats',
+    isAvailable: true,
+    isScrollable: true,
+    preferredDimensions: { width: 320, height: 932 },
+    keywords: ['hamburger', 'menu', 'drawer', 'navigation', 'nav menu'],
+  },
+  {
+    id: 'storage-onboarding-modal',
+    name: 'Storage Onboarding',
+    route: 'storage-onboarding-modal',
+    category: 'System',
+    description: 'Initial storage configuration and device capacity setup dialog',
+    isAvailable: true,
+    isScrollable: false,
+    preferredDimensions: { width: 430, height: 600 },
+    keywords: ['storage', 'onboarding', 'modal', 'setup'],
+  },
+  {
+    id: 'project-switcher-modal',
+    name: 'Project Switcher',
+    route: 'project-switcher-modal',
+    category: 'System',
+    description: 'Active project selector and workspace switcher modal',
+    isAvailable: true,
+    isScrollable: false,
+    preferredDimensions: { width: 430, height: 600 },
+    keywords: ['project', 'switcher', 'modal'],
   },
 ];
 

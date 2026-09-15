@@ -30,7 +30,7 @@ export interface CapturedInterfaceResult {
   id: string;
   name: string;
   category: string;
-  route: ScreenId;
+  route: ScreenId | string;
   canvas: HTMLCanvasElement;
   dataUrl: string;
   width: number;
@@ -80,8 +80,9 @@ export interface StageHandle {
 }
 
 export type StageRenderRequester = (
-  route: ScreenId,
-  isFull: boolean
+  route: ScreenId | string,
+  isFull: boolean,
+  interfaceId?: string
 ) => Promise<HTMLElement | StageHandle | null>;
 
 let globalStageRequester: StageRenderRequester | null = null;
@@ -160,6 +161,10 @@ export async function captureDomElement(
         scrollY: 0,
         windowWidth: options.windowWidth || element.scrollWidth || 430,
         windowHeight: isFull ? Math.max(element.scrollHeight, 800) : element.clientHeight || 932,
+        ignoreElements: (el) => {
+          // Never let html2canvas clone execution sandboxes or iframe internals
+          return el.tagName === 'IFRAME';
+        },
         onclone: (clonedDoc, clonedElement) => {
           if (clonedDoc.defaultView && clonedDoc.defaultView !== window) {
             unwrapCloned = wrapWindowGetComputedStyle(clonedDoc.defaultView);
@@ -824,13 +829,19 @@ export async function captureInterfaceByIdWithPanels(
     throw new Error(`Unrecognized interface identifier: "${interfaceIdOrRoute}".`);
   }
 
+  let lastError: Error | null = null;
+
   // Strategy 1: Offscreen Stage (preferred background capture)
   if (globalStageRequester) {
     let stageHandle: StageHandle | null = null;
     let stageElement: HTMLElement | null = null;
 
     try {
-      const stageResponse = await globalStageRequester(meta.route, options.fullHeight ?? false);
+      const stageResponse = await globalStageRequester(
+        meta.route,
+        options.fullHeight ?? false,
+        meta.id
+      );
       if (stageResponse) {
         if ('element' in stageResponse && typeof stageResponse.release === 'function') {
           stageHandle = stageResponse;
@@ -841,15 +852,22 @@ export async function captureInterfaceByIdWithPanels(
       }
     } catch (stageErr: any) {
       console.warn(`Stage setup failed for "${meta.name}":`, stageErr);
+      lastError = stageErr;
     }
 
     if (stageElement) {
       try {
-        return await executeElementCaptureWithPanels(stageElement, meta, options, format, quality);
-      } catch (renderErr: any) {
-        throw new Error(
-          `Screenshot generation failed for "${meta.name}": ${renderErr?.message || 'Rendering error'}`
+        const results = await executeElementCaptureWithPanels(
+          stageElement,
+          meta,
+          options,
+          format,
+          quality
         );
+        return results;
+      } catch (renderErr: any) {
+        console.warn(`Stage capture error for "${meta.name}", trying live DOM fallback:`, renderErr);
+        lastError = renderErr;
       } finally {
         stageHandle?.release();
       }
@@ -857,16 +875,18 @@ export async function captureInterfaceByIdWithPanels(
   }
 
   // Strategy 2: Live DOM container lookup for mounted/visited screens
-  const existingElement = document.getElementById(`screen-container-${meta.route}`);
+  const existingElement =
+    document.getElementById(`screen-container-${meta.route}`) ||
+    document.getElementById(`screen-container-${meta.id}`);
+
   if (existingElement) {
     const prevVisibility = existingElement.style.visibility;
     existingElement.style.visibility = 'visible';
     try {
       return await executeElementCaptureWithPanels(existingElement, meta, options, format, quality);
     } catch (renderErr: any) {
-      throw new Error(
-        `Live DOM capture failed for "${meta.name}": ${renderErr?.message || 'Rendering error'}`
-      );
+      console.warn(`Live DOM capture failed for "${meta.name}":`, renderErr);
+      lastError = renderErr;
     } finally {
       existingElement.style.visibility = prevVisibility;
     }
@@ -882,15 +902,14 @@ export async function captureInterfaceByIdWithPanels(
       try {
         return await executeElementCaptureWithPanels(directElement, meta, options, format, quality);
       } catch (renderErr: any) {
-        throw new Error(
-          `Component capture failed for "${meta.name}": ${renderErr?.message || 'Rendering error'}`
-        );
+        console.warn(`Component capture failed for "${meta.name}":`, renderErr);
+        lastError = renderErr;
       }
     }
   }
 
   throw new Error(
-    `Interface "${meta.name}" could not be staged for background capture (staging element unavailable and not currently mounted in DOM).`
+    `Screenshot generation failed for "${meta.name}": ${lastError?.message || 'Interface could not be staged or found in active DOM'}`
   );
 }
 

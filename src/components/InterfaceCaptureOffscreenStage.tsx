@@ -1,73 +1,71 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { ScreenId } from '../types';
 import { useApp } from '../context/AppContext';
 import { registerOffscreenStageRequester, StageHandle } from '../lib/interfaceCaptureEngine';
+import {
+  getInterfaceComponent,
+  registerInterfaceComponent,
+  unregisterInterfaceComponent,
+} from '../lib/interfaceComponentRegistry';
 
-import { DualPaneContainer } from './DualPaneContainer';
-import { ToolsMenuScreen } from '../screens/ToolsMenuScreen';
-import { VideoEditorScreen } from '../screens/VideoEditorScreen';
-import { AxonCodeScreen } from '../screens/AxonCodeScreen';
-import { AutomationScreen } from '../screens/AutomationScreen';
-import { NotesScreen } from '../screens/NotesScreen';
-import { SettingsScreen } from '../screens/SettingsScreen';
-import { AccountScreen } from '../screens/AccountScreen';
-import { NotificationsScreen } from '../screens/NotificationsScreen';
-import { TextToolsScreen } from '../screens/tools/TextToolsScreen';
-import { CalculationToolsScreen } from '../screens/tools/CalculationToolsScreen';
-import { ColorToolsScreen } from '../screens/tools/ColorToolsScreen';
-import { ImageToolsScreen } from '../screens/tools/ImageToolsScreen';
-import { FileConversionToolsScreen } from '../screens/tools/FileConversionToolsScreen';
-import { StorageDiagnosticsScreen } from '../screens/StorageDiagnosticsScreen';
-import { SpeechRateAnalysisScreen } from '../screens/tools/SpeechRateAnalysisScreen';
-import { OfflineBibleScreen } from '../screens/tools/OfflineBibleScreen';
-import { InterfaceCaptureScreen } from '../screens/tools/InterfaceCaptureScreen';
-
-// Registry of built-in screens
-const STAGE_BUILTIN_COMPONENTS: Record<string, React.ComponentType<any>> = {
-  axon: DualPaneContainer,
-  tools: ToolsMenuScreen,
-  code: AxonCodeScreen,
-  automation: AutomationScreen,
-  video_editor: VideoEditorScreen,
-  notes: NotesScreen,
-  settings: SettingsScreen,
-  account: AccountScreen,
-  notifications: NotificationsScreen,
-  tool_text: TextToolsScreen,
-  tool_calc: CalculationToolsScreen,
-  tool_units: CalculationToolsScreen,
-  tool_colors: ColorToolsScreen,
-  tool_images: ImageToolsScreen,
-  tool_files: FileConversionToolsScreen,
-  tool_speech_rate: SpeechRateAnalysisScreen,
-  tool_bible: OfflineBibleScreen,
-  storage: StorageDiagnosticsScreen,
-  tool_interface_capture: InterfaceCaptureScreen,
-};
-
-// Dynamic component registry for future-proof runtime interface additions
-const dynamicStageComponents = new Map<string, React.ComponentType<any>>();
-
+// Backwards compatibility re-exports for dynamic registration
 export function registerDynamicStageComponent(
   route: string,
   component: React.ComponentType<any>
 ): void {
-  dynamicStageComponents.set(route, component);
+  registerInterfaceComponent(route, component);
 }
 
 export function unregisterDynamicStageComponent(route: string): void {
-  dynamicStageComponents.delete(route);
+  unregisterInterfaceComponent(route);
 }
 
 interface QueuedStageRequest {
   id: number;
-  route: ScreenId;
+  route: string;
   isFull: boolean;
+  interfaceId?: string;
   resolve: (handle: StageHandle | null) => void;
   reject: (err: any) => void;
 }
 
 let requestIdCounter = 0;
+
+/**
+ * Isolated error boundary for staged offscreen components.
+ * Prevents any single screen render issue from unmounting the stage
+ * or stalling the capture queue.
+ */
+class StageErrorBoundary extends React.Component<
+  { children: React.ReactNode; route: string },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: React.ReactNode; route: string }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.warn(`Stage component error caught for route "${this.props.route}":`, error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex-1 min-h-[300px] flex flex-col items-center justify-center p-6 text-center bg-neutral-950 text-neutral-300 font-mono text-xs border border-neutral-800 rounded-lg m-4">
+          <div className="text-amber-400 font-semibold text-sm mb-2">Interface Render Notice</div>
+          <div className="text-neutral-400 max-w-[340px] break-words">
+            {this.state.error?.message || 'Component tree produced a rendering exception in stage'}
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export const InterfaceCaptureOffscreenStage: React.FC = () => {
   const { theme } = useApp();
@@ -95,19 +93,22 @@ export const InterfaceCaptureOffscreenStage: React.FC = () => {
 
   useEffect(() => {
     // Register the FIFO queue-backed offscreen stage requester
-    registerOffscreenStageRequester((route: ScreenId, isFull: boolean) => {
-      return new Promise<StageHandle | null>((resolve, reject) => {
-        const item: QueuedStageRequest = {
-          id: ++requestIdCounter,
-          route,
-          isFull,
-          resolve,
-          reject,
-        };
-        queueRef.current.push(item);
-        processQueue();
-      });
-    });
+    registerOffscreenStageRequester(
+      (route: string, isFull: boolean, interfaceId?: string) => {
+        return new Promise<StageHandle | null>((resolve, reject) => {
+          const item: QueuedStageRequest = {
+            id: ++requestIdCounter,
+            route,
+            isFull,
+            interfaceId,
+            resolve,
+            reject,
+          };
+          queueRef.current.push(item);
+          processQueue();
+        });
+      }
+    );
 
     return () => {
       registerOffscreenStageRequester(null);
@@ -137,7 +138,7 @@ export const InterfaceCaptureOffscreenStage: React.FC = () => {
       }
     }, 12000);
 
-    // Wait 80ms + 2 animation frames for children to mount and compute styles
+    // Wait 100ms + 2 animation frames for children to mount and compute styles
     const renderTimer = setTimeout(() => {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
@@ -157,7 +158,7 @@ export const InterfaceCaptureOffscreenStage: React.FC = () => {
           }
         });
       });
-    }, 80);
+    }, 100);
 
     return () => {
       isMounted = false;
@@ -170,19 +171,26 @@ export const InterfaceCaptureOffscreenStage: React.FC = () => {
     return null;
   }
 
-  const { route, isFull } = activeRequest;
-  const Component = STAGE_BUILTIN_COMPONENTS[route] || dynamicStageComponents.get(route);
-  const formattedTitle = route.replace(/_/g, ' ').toUpperCase();
+  const { route, isFull, interfaceId } = activeRequest;
+  // Dynamically resolve component from the authoritative registry without hardcoded if/else
+  const Component =
+    getInterfaceComponent(route) ||
+    (interfaceId ? getInterfaceComponent(interfaceId) : null);
+
+  const formattedTitle = (interfaceId || route).replace(/[_/]/g, ' ').toUpperCase();
+  const isOverlay = route.includes('drawer') || route.includes('modal');
 
   return (
     <div
       id="axon-offscreen-capture-stage"
+      data-capture-stage="true"
       ref={stageRef}
       style={{
         position: 'fixed',
         left: '-99999px',
         top: 0,
-        width: '430px',
+        width: isOverlay ? 'auto' : '430px',
+        minWidth: isOverlay ? '320px' : '430px',
         height: isFull ? 'auto' : '932px',
         minHeight: '932px',
         zIndex: -99999,
@@ -195,27 +203,31 @@ export const InterfaceCaptureOffscreenStage: React.FC = () => {
       }`}
       aria-hidden="true"
     >
-      {/* Offscreen Top Header Bar */}
-      <div className="h-12 w-full bg-black border-b border-neutral-800 px-3 flex items-center justify-between shrink-0">
-        <span className="text-xs font-bold tracking-tight text-white">
-          AXON • {formattedTitle}
-        </span>
-        <span className="text-[10px] font-mono text-neutral-400">OFFLINE UI</span>
-      </div>
+      {/* Offscreen Top Header Bar for full screens */}
+      {!isOverlay && (
+        <div className="h-12 w-full bg-black border-b border-neutral-800 px-3 flex items-center justify-between shrink-0">
+          <span className="text-xs font-bold tracking-tight text-white">
+            AXON • {formattedTitle}
+          </span>
+          <span className="text-[10px] font-mono text-neutral-400">UI PREVIEW</span>
+        </div>
+      )}
 
-      {/* Screen Component */}
+      {/* Screen Component with Isolated Error Boundary */}
       <div
         className={`flex-1 min-h-0 flex flex-col ${
           isFull ? 'h-auto overflow-visible' : 'overflow-hidden'
         }`}
       >
-        {Component ? (
-          <Component />
-        ) : (
-          <div className="flex-1 flex items-center justify-center p-8 text-neutral-500 text-xs font-mono">
-            Interface component for &quot;{route}&quot; not registered
-          </div>
-        )}
+        <StageErrorBoundary route={route} key={`${route}-${interfaceId || ''}`}>
+          {Component ? (
+            <Component />
+          ) : (
+            <div className="flex-1 flex items-center justify-center p-8 text-neutral-500 text-xs font-mono">
+              Interface component for &quot;{route}&quot; not registered
+            </div>
+          )}
+        </StageErrorBoundary>
       </div>
     </div>
   );

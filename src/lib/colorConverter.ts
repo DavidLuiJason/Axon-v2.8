@@ -265,86 +265,130 @@ export function sanitizeClonedTreeForCapture(
   clonedElement: HTMLElement,
   originalElement?: HTMLElement
 ): void {
-  // 1. Sanitize all <style> elements in the cloned document
-  const styleTags = clonedDoc.querySelectorAll('style');
-  styleTags.forEach((styleTag) => {
-    if (styleTag.textContent && containsModernColorFunction(styleTag.textContent)) {
-      styleTag.textContent = replaceModernColorsInCss(styleTag.textContent);
-    }
-  });
-
-  // 2. Relevant color properties to check and sanitize
-  const COLOR_CSS_PROPERTIES = [
-    'color',
-    'background-color',
-    'border-top-color',
-    'border-right-color',
-    'border-bottom-color',
-    'border-left-color',
-    'outline-color',
-    'text-decoration-color',
-    'box-shadow',
-    'text-shadow',
-    'fill',
-    'stroke',
-    'caret-color',
-    'accent-color',
-    'background-image',
-  ];
-
-  const clonedList = [clonedElement, ...Array.from(clonedElement.querySelectorAll('*'))] as HTMLElement[];
-  const origList = originalElement
-    ? [originalElement, ...Array.from(originalElement.querySelectorAll('*'))] as HTMLElement[]
-    : [];
-
-  const win = clonedDoc.defaultView || (typeof window !== 'undefined' ? window : null);
-
-  for (let idx = 0; idx < clonedList.length; idx++) {
-    const el = clonedList[idx];
-    if (!el || !el.style) continue;
-
-    // Check inline style attribute
-    const inlineStyle = el.getAttribute('style');
-    if (inlineStyle && containsModernColorFunction(inlineStyle)) {
-      el.setAttribute('style', replaceModernColorsInCss(inlineStyle));
+  try {
+    // 1. If clonedElement is the offscreen capture stage, bring it to (0, 0)
+    // in the cloned document so html2canvas computes positive bounds and aligns correctly
+    if (
+      clonedElement.id === 'axon-offscreen-capture-stage' ||
+      clonedElement.getAttribute('data-capture-stage') === 'true'
+    ) {
+      clonedElement.style.position = 'relative';
+      clonedElement.style.left = '0px';
+      clonedElement.style.top = '0px';
+      clonedElement.style.margin = '0px';
+      clonedElement.style.visibility = 'visible';
+      clonedElement.style.opacity = '1';
+      clonedElement.style.zIndex = '1';
+    } else {
+      // Ensure visibility & opacity are active so hidden background screens don't render blank
+      clonedElement.style.visibility = 'visible';
+      clonedElement.style.opacity = '1';
     }
 
-    // Check computed styles on original element if available
-    const origEl = origList[idx];
-    if (origEl && typeof window !== 'undefined') {
+    // 2. Disable/safely neutralize child iframes in cloned tree
+    // so html2canvas never invokes cross-document methods on sandboxed runtimes
+    const iframes = clonedElement.querySelectorAll('iframe');
+    iframes.forEach((ifr) => {
       try {
-        const origComputed = window.getComputedStyle(origEl);
-        if (origComputed) {
-          for (const prop of COLOR_CSS_PROPERTIES) {
-            const val = origComputed.getPropertyValue(prop);
-            if (val && containsModernColorFunction(val)) {
-              const converted = replaceModernColorsInCss(val);
-              el.style.setProperty(prop, converted, 'important');
+        ifr.setAttribute('data-html2canvas-ignore', 'true');
+        const placeholder = clonedDoc.createElement('div');
+        placeholder.style.width = ifr.style.width || '100%';
+        placeholder.style.height = ifr.style.height || '220px';
+        placeholder.style.backgroundColor = '#0c0c0c';
+        placeholder.style.border = '1px dashed #2e2e2e';
+        placeholder.style.borderRadius = '8px';
+        placeholder.style.display = 'flex';
+        placeholder.style.alignItems = 'center';
+        placeholder.style.justifyContent = 'center';
+        placeholder.style.color = '#737373';
+        placeholder.style.fontSize = '12px';
+        placeholder.style.fontFamily = 'monospace';
+        placeholder.textContent = '[Sandboxed Runtime Execution Area]';
+        ifr.parentNode?.insertBefore(placeholder, ifr);
+        ifr.style.display = 'none';
+      } catch {
+        ifr.setAttribute('data-html2canvas-ignore', 'true');
+      }
+    });
+
+    // 3. Sanitize all <style> elements in the cloned document
+    const styleTags = clonedDoc.querySelectorAll('style');
+    styleTags.forEach((styleTag) => {
+      if (styleTag.textContent && containsModernColorFunction(styleTag.textContent)) {
+        styleTag.textContent = replaceModernColorsInCss(styleTag.textContent);
+      }
+    });
+
+    // 4. Relevant color properties to check and sanitize
+    const COLOR_CSS_PROPERTIES = [
+      'color',
+      'background-color',
+      'border-top-color',
+      'border-right-color',
+      'border-bottom-color',
+      'border-left-color',
+      'outline-color',
+      'box-shadow',
+      'background-image',
+    ];
+
+    const clonedList = [clonedElement, ...Array.from(clonedElement.querySelectorAll('*'))] as HTMLElement[];
+    const origList = originalElement
+      ? ([originalElement, ...Array.from(originalElement.querySelectorAll('*'))] as HTMLElement[])
+      : [];
+
+    const win = clonedDoc.defaultView || (typeof window !== 'undefined' ? window : null);
+    const origWin = originalElement?.ownerDocument?.defaultView || (typeof window !== 'undefined' ? window : null);
+
+    for (let idx = 0; idx < clonedList.length; idx++) {
+      const el = clonedList[idx];
+      if (!el || !el.style) continue;
+
+      // Check inline style attribute
+      const inlineStyle = el.getAttribute('style');
+      if (inlineStyle && containsModernColorFunction(inlineStyle)) {
+        el.setAttribute('style', replaceModernColorsInCss(inlineStyle));
+      }
+
+      // Check computed styles on original element if available
+      const origEl = origList[idx];
+      if (origEl && origWin) {
+        try {
+          const origComputed = origWin.getComputedStyle(origEl);
+          if (origComputed) {
+            for (const prop of COLOR_CSS_PROPERTIES) {
+              const val = origComputed.getPropertyValue(prop);
+              if (val && containsModernColorFunction(val)) {
+                const converted = replaceModernColorsInCss(val);
+                el.style.setProperty(prop, converted, 'important');
+              }
             }
           }
+        } catch {
+          // Ignore read errors
         }
-      } catch {
-        // Ignore read errors
       }
-    }
 
-    // Check computed styles on cloned element
-    if (win) {
-      try {
-        const clonedComputed = win.getComputedStyle(el);
-        if (clonedComputed) {
-          for (const prop of COLOR_CSS_PROPERTIES) {
-            const val = clonedComputed.getPropertyValue(prop);
-            if (val && containsModernColorFunction(val)) {
-              const converted = replaceModernColorsInCss(val);
-              el.style.setProperty(prop, converted, 'important');
+      // Check computed styles on cloned element
+      if (win) {
+        try {
+          const clonedComputed = win.getComputedStyle(el);
+          if (clonedComputed) {
+            for (const prop of COLOR_CSS_PROPERTIES) {
+              const val = clonedComputed.getPropertyValue(prop);
+              if (val && containsModernColorFunction(val)) {
+                const converted = replaceModernColorsInCss(val);
+                el.style.setProperty(prop, converted, 'important');
+              }
             }
           }
+        } catch {
+          // Ignore read errors
         }
-      } catch {
-        // Ignore read errors
       }
     }
+  } catch (err) {
+    console.warn('Modern color sanitization fallback triggered:', err);
   }
 }
 
@@ -352,7 +396,12 @@ export function sanitizeClonedTreeForCapture(
  * Wraps a Window's getComputedStyle so that any CSS properties
  * containing modern color functions (oklab, oklch, lab, lch, color)
  * are seamlessly normalized to standard rgb/rgba during rendering.
- * Returns an unwrap callback to restore the original method.
+ *
+ * CRITICAL FIX: Ensures that when getComputedStyle is invoked across
+ * different window/document contexts (such as html2canvas iframe clones),
+ * the invocation is executed against the element's actual owner window.
+ * Catches all errors and provides safe fallback styles, completely eliminating
+ * "Illegal invocation" failures.
  */
 export function wrapWindowGetComputedStyle(win: Window): () => void {
   if (!win || !win.getComputedStyle) return () => {};
@@ -370,6 +419,7 @@ export function wrapWindowGetComputedStyle(win: Window): () => void {
   };
 
   const createProxy = (decl: CSSStyleDeclaration): CSSStyleDeclaration => {
+    if (!decl) return decl;
     return new Proxy(decl, {
       get(target, prop) {
         if (prop === 'getPropertyValue') {
@@ -390,7 +440,7 @@ export function wrapWindowGetComputedStyle(win: Window): () => void {
           }
           return sanitizeValue(val);
         } catch {
-          return undefined;
+          return '';
         }
       },
     });
@@ -398,12 +448,39 @@ export function wrapWindowGetComputedStyle(win: Window): () => void {
 
   try {
     win.getComputedStyle = function (elt: Element, pseudoElt?: string | null) {
+      if (!elt || typeof elt !== 'object') {
+        return null as any;
+      }
+
+      // Identify the true window context of the element to eliminate "Illegal invocation"
+      const ownerDoc = elt.ownerDocument;
+      const ownerWin = ownerDoc?.defaultView || win;
+
       try {
-        const decl = orig.call(win, elt, pseudoElt);
+        // If the element belongs to another document (e.g. html2canvas iframe clone),
+        // query that window's getComputedStyle rather than the host window
+        const targetFn =
+          ownerWin !== win && typeof ownerWin.getComputedStyle === 'function'
+            ? ownerWin.getComputedStyle
+            : orig;
+
+        const decl = targetFn.call(ownerWin, elt, pseudoElt);
         if (!decl) return decl;
         return createProxy(decl);
       } catch {
-        return orig.call(win, elt, pseudoElt);
+        // Fallback 1: try orig with host win if ownerWin failed
+        try {
+          const decl = orig.call(win, elt, pseudoElt);
+          if (!decl) return decl;
+          return createProxy(decl);
+        } catch {
+          // Fallback 2: Never throw "Illegal invocation"! Return a safe proxy around the inline style or an empty object
+          try {
+            return createProxy(((elt as any).style || {}) as CSSStyleDeclaration);
+          } catch {
+            return null as any;
+          }
+        }
       }
     } as typeof win.getComputedStyle;
   } catch {
